@@ -20,3 +20,12 @@ files_kim_new_model/
 
 service-key.json
 *-key.json
+
+# Editor lock files
+.#*
+
+# Editor lock files
+.#*
+*~
+*.swp
+*.swo
