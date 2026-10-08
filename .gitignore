@@ -1,0 +1,22 @@
+node_modules
+dist
+.env*
+*~
+*.textClipping
+.DS_Store
+__pycache__
+Claude outputs/
+backup_2026-10-07/
+rfps_combined.csv
+rfps_combined.json
+dump_*.py
+dedupe_*.py
+clean_rfp_duplicates.py
+extract_merit_rfps.py
+find_*.py
+fix_charitable.py
+files_kim_new_model/
+*.pkl
+
+service-key.json
+*-key.json
