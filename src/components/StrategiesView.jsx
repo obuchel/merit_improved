@@ -32,6 +32,8 @@ import { XGBOOST_TREES_V8 as XGBOOST_TREES } from '../xgboost_trees_data_v8.js';
 import { computeRoomsValue } from '../roomsValue';
 import { DisplacementByNight, KeyFactors } from './DisplacementCards';
 import PerturbationPanel from './PerturbationPanel';
+import { computePerturbation, perturbationFactors } from '../perturbationTerms';
+import ModelStatus from './ModelStatus';
 import InfoTip from './InfoTip';
 import { buildModelFeatures } from '../modelFeatures';
 import { predictModel } from '../modelRuntime';
@@ -425,7 +427,8 @@ function buildJSStrategies(rfp, preds, nights, bookedMap = {}, contract = null) 
     const netRev    = totalRev - dispCost;
     // Rooms-only value: room revenue − displacement − CPOR cost (no flat margin, no $0 floor).
     // F&B and meeting rental are shown, not valued.
-    const profit    = rv.delta;
+    const pert      = computePerturbation(perturbationFactors(rfp, nights));
+    const profit    = rv.delta + pert.total; // Δ* = Δ + fitted terms (0 while none accepted)
     const roiPct    = Math.round((netRev / Math.max(1, BASELINE_ADR_DISP * rfp.room_block * nights) - 1) * 100);
     return {
       name, risk, color, adr,
@@ -440,6 +443,8 @@ function buildJSStrategies(rfp, preds, nights, bookedMap = {}, contract = null) 
       dispCost,
       dispDetail:     disp,
       expectedProfit: profit,
+      deltaBase:      rv.delta,
+      perturbation:   pert,
       riskAdjustedValue: Math.round(profit * conv),
       roomCost:       rv.roomCost,
       roiVsBaseline:  (roiPct >= 0 ? '+' : '') + roiPct + '%',
@@ -493,7 +498,9 @@ function applyStrategyOverrides(strategy, override, rfp, nights, contract = null
   const netRev     = totalRevenue - dispCost;
   const rv = computeRoomsValue({ adr, pickup: pickupRate / 100, block: Number(rfp?.room_block) || 0, nights: nights || 1,
     dispCost, contract, cpor: CONFIG_DEFAULTS.cpor, pinnedRoomRevenue: override.roomRevenue });
-  const expectedProfit = rv.delta;
+  const pert = computePerturbation(perturbationFactors(rfp, nights));
+  const expectedProfit = rv.delta + pert.total; // Δ*
+  const deltaBase = rv.delta;
   const riskAdjustedValue = Math.round(expectedProfit * (conversionProb / 100));
   const baselineDenom = Math.max(1, 164 * roomNights);
   const roiPct = Math.round((netRev / baselineDenom - 1) * 100);
@@ -503,7 +510,7 @@ function applyStrategyOverrides(strategy, override, rfp, nights, contract = null
   return {
     ...strategy,
     adr, pickupRate, conversionProb, roomRevenue, fnbRevenue, spaceRevenue,
-    totalRevenue, dispCost, expectedProfit, riskAdjustedValue, roiVsBaseline, gviIndex,
+    totalRevenue, dispCost, expectedProfit, deltaBase, perturbation: pert, riskAdjustedValue, roiVsBaseline, gviIndex,
     overridden: OVERRIDE_FIELDS.some(f => override[f] !== undefined),
   };
 }
@@ -871,7 +878,8 @@ const StrategiesView = ({ rfp, onBack, onEdit, onRfpChange, inEditMode = false, 
           {primaryStrategy && primaryStrategy.dispDetail && (
             <>
               <DisplacementByNight disp={primaryStrategy.dispDetail} block={Number(rfp.room_block) || 0} totalRooms={CONFIG_DEFAULTS.total_rooms} />
-              <PerturbationPanel disp={primaryStrategy.dispDetail} block={Number(rfp.room_block) || 0} delta={primaryStrategy.expectedProfit} ps={primaryStrategy} />
+              <ModelStatus rate={primaryStrategy.adr} contract={contract} cpor={CONFIG_DEFAULTS.cpor} totalRooms={CONFIG_DEFAULTS.total_rooms} />
+              <PerturbationPanel disp={primaryStrategy.dispDetail} block={Number(rfp.room_block) || 0} delta={primaryStrategy.deltaBase ?? primaryStrategy.expectedProfit} ps={primaryStrategy} rfp={rfp} />
               <KeyFactors ps={primaryStrategy} disp={primaryStrategy.dispDetail} contract={contract} topDemand={topDemand} />
             </>
           )}
@@ -911,7 +919,7 @@ const StrategiesView = ({ rfp, onBack, onEdit, onRfpChange, inEditMode = false, 
             <div className="revenue-tiles-grid">
               <div className="revenue-tile"><div className="revenue-tile-label">Group Room Revenue<InfoTip title="Group room revenue">ADR × recognized room-nights. Recognized room-nights = block × nights × expected pickup. With a contract, it is at least the guaranteed room-nights, because attrition is billed. Without a contract, only expected pickup counts.</InfoTip></div><div className="revenue-tile-val">{safeFmt(primaryStrategy.roomRevenue)}</div></div>
               <div className="revenue-tile"><div className="revenue-tile-label">− Displaced transient − room cost (CPOR $50, placeholder)<InfoTip title="Displacement and room cost">Per night: displaced rooms = the smaller of the block, the transient demand, and (block + demand − rooms left after other groups). That is averaged over low, median and high demand (weights 0.3, 0.4, 0.3) and multiplied by the transient rate. Room cost = $50 cost per occupied room × occupied room-nights. The $50 is a placeholder until the hotel supplies its real figure.</InfoTip></div><div className="revenue-tile-val">{safeFmt((primaryStrategy.dispCost || 0) + (primaryStrategy.roomCost || 0))}</div></div>
-              <div className="revenue-tile revenue-tile-total"><div className="revenue-tile-label">Rooms value (Δ, before conversion)<InfoTip title="Rooms value (Δ)">Group room revenue − displaced transient revenue − cost of occupied rooms − contract concessions. It is not floored at zero, so a negative number means the booking loses money against holding the rooms for transient guests. Multiply by the win probability for a risk-adjusted value. F&B and meeting rental are not included.</InfoTip></div><div className="revenue-tile-val">{Number(primaryStrategy.expectedProfit) < 0 ? '−' : ''}{safeFmt(Math.abs(primaryStrategy.expectedProfit))}</div></div>
+              <div className="revenue-tile revenue-tile-total"><div className="revenue-tile-label">{primaryStrategy.perturbation?.lines?.length ? 'Rooms value (Δ*, before conversion)' : 'Rooms value (Δ, before conversion)'}<InfoTip title="Rooms value (Δ*)">Δ* = Δ plus any accepted fitted perturbation terms (currently none, so Δ* = Δ). Group room revenue − displaced transient revenue − cost of occupied rooms − contract concessions. It is not floored at zero, so a negative number means the booking loses money against holding the rooms for transient guests. Multiply by the win probability for a risk-adjusted value. F&B and meeting rental are not included.</InfoTip></div><div className="revenue-tile-val">{Number(primaryStrategy.expectedProfit) < 0 ? '−' : ''}{safeFmt(Math.abs(primaryStrategy.expectedProfit))}</div></div>
               <div className="revenue-tile"><div className="revenue-tile-label">F&amp;B Revenue (shown, not valued)<InfoTip title="F&B revenue">F&B per person (model) × attendees × strategy factor, with the per-person floor described under the F&B model. Shown for context only; it does not change the rooms value.</InfoTip></div><div className="revenue-tile-val">{safeFmt(primaryStrategy.fnbRevenue)}</div></div>
               <div className="revenue-tile"><div className="revenue-tile-label">{primaryStrategy.rentalFromContract ? 'Rental charged (contract)' : 'Meeting Rental (placeholder, shown not valued)'}<InfoTip title="Meeting rental">{primaryStrategy.rentalFromContract ? 'From the contract: full meeting rental × (1 − rental discount). Shown for context; it does not change the rooms value.' : 'A placeholder: room block × nights × the meeting rate in hotelConfig.js ($18 per room-night) × strategy factor (Conservative ×1.00, Optimal ×1.40, Premium ×1.70). Not a model output. Enter a contract with the full meeting rental to replace it with the real charge.'}</InfoTip></div><div className="revenue-tile-val">{safeFmt(primaryStrategy.spaceRevenue)}</div>{primaryStrategy.rentalFromContract && <div style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: 4 }}>Full rental {safeFmt(contract.full_meeting_rental)} − {Number(contract.rental_discount_pct) || 0}% discount{Number(contract.fnb_minimum) > 0 ? ` · F&B minimum ${safeFmt(contract.fnb_minimum)}` : ''}</div>}</div>
             </div>
